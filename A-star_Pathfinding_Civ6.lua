@@ -20,9 +20,14 @@ function GetLandRoute(startPlot : object, endPlot : object, range)
 		print("Start and end plots are the same...why are you trying to find a path?")
 		return {startPlot}, 0
 	end
-	if Map.GetPlotDistance(startPlot:GetX(), startPlot:GetY(), endPlot:GetX(), endPlot:GetY()) <= 1 then
+	minDist = Map.GetPlotDistance(startPlot:GetX(), startPlot:GetY(), endPlot:GetX(), endPlot:GetY())
+	if minDist <= 1 then
 		print("Start and end plots are adjacent...pretty simple one here...")
 		return {endPlot, startPlot}, 1
+	end
+	if minDist > range then
+		print("Plots are too far from one another (specified range: "..range..")")
+		return {}, 99999;
 	end
 
 	-- Okay, the path isn't so simple after all	
@@ -36,13 +41,16 @@ function GetLandRoute(startPlot : object, endPlot : object, range)
 
 	-- A* ALGORITHM HELPER FUNCTIONS --
 	-- Adds a plot to the OpenList and calculates its G, H, and F values
-	local function OpenPlot(currPlot : object, initialCost, bIsStart)
+	local function OpenPlot(currPlot : object, initialCost, bIsStart, bIsAcrossRiver)
 		local G = 0
 		local H = Map.GetPlotDistance(currPlot:GetX(), currPlot:GetY(), endPlot:GetX(), endPlot:GetY())
 
 		-- If it's not the starting plot, we care about the movement cost
 		if not(bIsStart) then
 			G = initialCost + currPlot:GetMovementCost()
+			if bIsAcrossRiver then
+				G = G + 1
+			end
 		end
 		
 		local F = G + H
@@ -63,11 +71,14 @@ function GetLandRoute(startPlot : object, endPlot : object, range)
 	end
 
 	-- Updates a plot in the OpenList if the newCost results in a lower F value
-	local function UpdatePlot(plot : object, newCost)
+	local function UpdatePlot(plot : object, newCost, bIsAcrossRiver)
 		-- See if the plot exists in the open list, but not the closed list
 		if OpenList[plot:GetIndex()] ~= nil  and ClosedList[plot:GetIndex()] == nil then
 			local oldF = OpenList[plot:GetIndex()].F
 			local newCost = newCost + plot:GetMovementCost()
+			if bIsAcrossRiver then
+				newCost = newCost + 1
+			end
 			local newF = newCost + OpenList[plot:GetIndex()].H
 
 			if newF < oldF then
@@ -90,8 +101,11 @@ function GetLandRoute(startPlot : object, endPlot : object, range)
 
 		-- Iterate over all adjacent plots
 		for i = 0, 5 do
-			adjPlot = Map.GetAdjacentPlot(plot:GetX(), plot:GetY(), i)
+			local adjPlot = Map.GetAdjacentPlot(plot:GetX(), plot:GetY(), i)
 			--print("Checking adjacent plot "..adjPlot:GetIndex())
+
+			-- Check to see if we cross a river, and if we even care
+			local crossesRiver = plot:IsRiverCrossingToPlot(adjPlot) and Minimize_River_Crossings
 
 			if adjPlot ~= nil then
 				-- Check if the plot is not water, impassable, or already closed
@@ -102,10 +116,10 @@ function GetLandRoute(startPlot : object, endPlot : object, range)
 				if canOpen then
 					if OpenList[adjPlot:GetIndex()] == nil then
 						-- Plot is not in the open list, add it
-						OpenPlot(adjPlot, thisCost, false)
+						OpenPlot(adjPlot, thisCost, false, crossesRiver)
 					else
 						-- Plot is in the open list, update it
-						UpdatePlot(adjPlot, thisCost)
+						UpdatePlot(adjPlot, thisCost, crossesRiver)
 					end
 				end
 			end
@@ -117,7 +131,7 @@ function GetLandRoute(startPlot : object, endPlot : object, range)
 		local Fmin = 99999
 		local Gmin = -1
 		local nextEntry = nil
-		for k,entry in pairs(OpenList) do
+		for k,entry in orderedPairs(OpenList) do
 			--print("Evaluating open list item "..k)
 			--if entry.F < Fmin and entry.G > Gmax then
 			if entry.F < Fmin then
@@ -168,23 +182,24 @@ function GetLandRoute(startPlot : object, endPlot : object, range)
 		local maxIterations = 1000
 		local thisIteration = 0
 
-		print ("Initiating backtrack")
+		print ("Initiating backtrack...")
 		while backtracking do
 			thisIteration = thisIteration + 1
 			local costMin = 99999
 			local nextPlot = nil
 
-			-- iterate over all adjacent plots to find the lowest movement cost
+			-- iterate over all adjacent plots to find the lowest F cost
 			--print("Checking adjacent plots... i = "..thisIteration)
 			for i = 0, 5 do
 				local adjPlot = Map.GetAdjacentPlot(currPlot:GetX(), currPlot:GetY(), i)				
 				
 				if adjPlot ~= nil then
 					-- Check if the plot is closed
-					if ClosedList[adjPlot:GetIndex()] ~= nil then
+					local entry = ClosedList[adjPlot:GetIndex()]
+					if entry ~= nil then
 						--print ("Found a closed neighbor")
-						-- if it is, we see whether it's the lowest F cost
-						local thisCost = ClosedList[adjPlot:GetIndex()].F
+						-- if it is, we see whether it's the lowest G cost
+						local thisCost = entry.G
 						if thisCost < costMin then
 							-- if it is, store it
 							costMin = thisCost
@@ -210,12 +225,12 @@ function GetLandRoute(startPlot : object, endPlot : object, range)
 			else
 				-- Couldn't find a tile for some reason
 				backtracking = false
-				print("Failed to find an adjacent plot on the closed list... i = "..thisIteration)
+				print("ERROR: Failed to find an adjacent plot on the closed list... i = "..thisIteration)
 			end
 
 			if thisIteration >= maxIterations then
 				backtracking = false
-				print("Failed to find a route within the max iterations allowed (1000)")
+				print("ERROR: Failed to find a route within the max iterations allowed (1000)")
 			end
 		end
 
@@ -223,7 +238,7 @@ function GetLandRoute(startPlot : object, endPlot : object, range)
 			totalMoveCost = ClosedList[endPlot:GetIndex()].G
 			print("Path Complete! Cost = "..totalMoveCost)
 		else
-			print("Route wasn't completed...")
+			print("ERROR: Route wasn't completed")
 			fastestPath = {}
 			totalMoveCost = 9999999
 		end
